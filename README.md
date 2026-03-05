@@ -1,4 +1,4 @@
-# Excel Transformer Browser Extension
+# Excel Validator Browser Extension
 Eine Chrome-Erweiterung, die Excel-Downloads abfängt, an eine API sendet und die transformierte Version automatisch herunterlädt.
 
 ## 🚀 Features
