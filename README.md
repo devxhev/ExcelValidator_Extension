@@ -19,3 +19,19 @@ Eine Chrome-Erweiterung, die Excel-Downloads abfängt, an eine API sendet und di
 git clone https://github.com/deinusername/excel-transformer-extension.git
 cd excel-transformer-extension
 ```
+
+## In Chrome laden
+- Öffne Chrome und gehe zu ```chrome://extensions/```
+
+- Aktiviere "Developer mode" (Toggle oben rechts)
+
+- Klicke auf "Load unpacked"
+
+- Wähle den Extension-Ordner aus
+
+## Installation überprüfen
+- Das Extension-Icon sollte in der Toolbar erscheinen
+
+- Öffne die Background-Console: Rechtsklick auf Extension → "Inspect popup" → Console Tab
+
+- Suche nach "Background Script geladen"
