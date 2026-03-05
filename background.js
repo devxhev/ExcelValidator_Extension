@@ -1,6 +1,19 @@
 console.log("Background Script geladen");
 
 const pendingUrls = new Set();
+let finalFileName = "";
+let originalFileNames = new Map();
+
+chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
+  if (downloadItem.filename.includes("Download")) {
+    suggest({ filename: originalFileNames.get(downloadItem.id - 1) });
+    return;
+  }
+  originalFileNames.set(downloadItem.id, downloadItem.filename);
+  finalFileName = downloadItem.filename;
+
+  suggest({ filename: finalFileName });
+});
 
 chrome.downloads.onCreated.addListener(async (downloadItem) => {
   console.log("Download erkannt:", downloadItem);
@@ -42,7 +55,7 @@ async function handleNormalDownload(downloadItem) {
   try {
     const response = await fetch(downloadItem.url);
     const blob = await response.blob();
-    await processAndDownload(blob, downloadItem.filename);
+    await processAndDownload(blob);
   } catch (error) {
     console.error("Fehler bei normalem Download:", error);
     throw error;
@@ -50,9 +63,9 @@ async function handleNormalDownload(downloadItem) {
 }
 
 async function handleBlobDownload(downloadItem) {
-  const splittedUrl = downloadItem.url.split(":");
+  const replacedString = downloadItem.url.replace("blob:", "");
   const tabs = await chrome.tabs.query({
-    url: splittedUrl[1] + ":" + splittedUrl[2],
+    url: replacedString,
   });
 
   if (tabs.length === 0) {
@@ -102,7 +115,7 @@ async function handleBlobDownload(downloadItem) {
           type: response.mimeType,
         });
 
-        processAndDownload(blob, downloadItem.filename).catch((error) => {
+        processAndDownload(blob).catch((error) => {
           console.error("Fehler bei API:", error);
         });
       } else {
@@ -112,10 +125,10 @@ async function handleBlobDownload(downloadItem) {
   );
 }
 
-async function processAndDownload(blob, filename) {
+async function processAndDownload(blob) {
   console.log("Sende an API, Größe:", blob.size, "Bytes");
 
-  let safeFilename = filename;
+  let safeFilename = finalFileName;
 
   if (!safeFilename || safeFilename.trim() === "") {
     const now = new Date();
