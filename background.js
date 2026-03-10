@@ -1,195 +1,165 @@
 console.log("Background Script geladen");
 
 const pendingUrls = new Set();
-let finalFileName = "";
 let originalFileNames = new Map();
+let finalFileName = "";
 
+function isExcelDownload(downloadItem) {
+  return (
+    /\.(xls|xlsx|xlsm)$/i.test(downloadItem.filename) ||
+    downloadItem.mime ===
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    downloadItem.mime === "application/vnd.ms-excel"
+  );
+}
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
-  if (downloadItem.filename.includes("Download")) {
+  if (
+    (downloadItem.state && downloadItem.state !== "in_progress") ||
+    !isExcelDownload(downloadItem)
+  ) {
+    suggest();
+    return;
+  }
+
+  if (downloadItem.byExtensionId) {
     suggest({ filename: originalFileNames.get(downloadItem.id - 1) });
     return;
   }
+
   originalFileNames.set(downloadItem.id, downloadItem.filename);
   finalFileName = downloadItem.filename;
 
   suggest({ filename: finalFileName });
 });
 
+// Download erkannt
 chrome.downloads.onCreated.addListener(async (downloadItem) => {
-  console.log("Download erkannt:", downloadItem);
-  console.log("Filename:", downloadItem.filename);
-  console.log("URL:", downloadItem.url);
+  console.log("Download erkannt:", downloadItem.filename);
 
+  // eigenen Download ignorieren
   if (pendingUrls.has(downloadItem.url)) {
-    console.log("Ignoriere eigenen Download - URL bekannt:", downloadItem.url);
+    console.log("Ignoriere eigenen Download");
     pendingUrls.delete(downloadItem.url);
     return;
   }
+
+  if (!isExcelDownload(downloadItem)) return;
 
   try {
     await chrome.downloads.cancel(downloadItem.id);
     console.log("Download abgebrochen");
 
-    if (
-      downloadItem.url.startsWith("http") &&
-      !downloadItem.url.startsWith("blob:")
-    ) {
-      console.log("Normale HTTP URL, direkt verarbeiten");
+    if (downloadItem.url.startsWith("http")) {
       await handleNormalDownload(downloadItem);
     } else if (downloadItem.url.startsWith("blob:")) {
-      console.log("Blob URL erkannt, suche Tab...");
       await handleBlobDownload(downloadItem);
     }
   } catch (error) {
     console.error("Fehler:", error);
-    const fallbackUrl = downloadItem.url;
-    pendingUrls.add(fallbackUrl);
+
+    pendingUrls.add(downloadItem.url);
+
     await chrome.downloads.download({
-      url: fallbackUrl,
+      url: downloadItem.url,
       filename: downloadItem.filename,
     });
   }
 });
 
+// HTTP Download
 async function handleNormalDownload(downloadItem) {
-  try {
-    const response = await fetch(downloadItem.url);
-    const blob = await response.blob();
-    await processAndDownload(blob);
-  } catch (error) {
-    console.error("Fehler bei normalem Download:", error);
-    throw error;
-  }
+  console.log("HTTP Download erkannt");
+
+  const response = await fetch(downloadItem.url);
+  const blob = await response.blob();
+
+  await processAndDownload(blob);
 }
 
+// Blob Download
 async function handleBlobDownload(downloadItem) {
-  const replacedString = downloadItem.url.replace("blob:", "");
-  const tabs = await chrome.tabs.query({
-    url: replacedString,
+  console.log("Blob Download erkannt");
+
+  const [tab] = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
   });
 
-  if (tabs.length === 0) {
-    const [activeTab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
-    if (activeTab) {
-      tabs.push(activeTab);
-    }
+  if (!tab) {
+    throw new Error("Kein Tab gefunden");
   }
-
-  if (tabs.length === 0) {
-    throw new Error("Kein passender Tab gefunden");
-  }
-
-  console.log("Tab gefunden:", tabs[0].id);
 
   try {
-    await chrome.tabs.sendMessage(tabs[0].id, { action: "ping" });
-  } catch (e) {
-    console.log("Content Script nicht geladen, injiziere...");
+    await chrome.tabs.sendMessage(tab.id, { action: "ping" });
+  } catch {
+    console.log("Content Script nicht geladen → injiziere");
+
     await chrome.scripting.executeScript({
-      target: { tabId: tabs[0].id },
+      target: { tabId: tab.id },
       files: ["content.js"],
     });
-    await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
   chrome.tabs.sendMessage(
-    tabs[0].id,
+    tab.id,
     {
       action: "getBlob",
       url: downloadItem.url,
-      filename: downloadItem.filename,
     },
-    (response) => {
+    async (response) => {
       if (chrome.runtime.lastError) {
-        console.error("Fehler beim Senden:", chrome.runtime.lastError);
+        console.error("Message Fehler:", chrome.runtime.lastError);
         return;
       }
 
-      console.log("Antwort von Content Script:", response);
-
-      if (response && response.success) {
-        const blob = new Blob([new Uint8Array(response.data)], {
-          type: response.mimeType,
-        });
-
-        processAndDownload(blob).catch((error) => {
-          console.error("Fehler bei API:", error);
-        });
-      } else {
-        console.error("Konnte Blob nicht holen:", response?.error);
+      if (!response || !response.success) {
+        console.error("Blob konnte nicht geholt werden");
+        return;
       }
+
+      const blob = new Blob([new Uint8Array(response.data)], {
+        type: response.mimeType,
+      });
+
+      await processAndDownload(blob);
     },
   );
 }
 
+// API + Download
 async function processAndDownload(blob) {
-  console.log("Sende an API, Größe:", blob.size, "Bytes");
+  console.log("Verarbeite Datei, Größe:", blob.size);
 
   let safeFilename = finalFileName;
 
-  if (!safeFilename || safeFilename.trim() === "") {
-    const now = new Date();
-    const timestamp = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, "0")}-${now.getDate().toString().padStart(2, "0")}_${now.getHours().toString().padStart(2, "0")}-${now.getMinutes().toString().padStart(2, "0")}-${now.getSeconds().toString().padStart(2, "0")}`;
-    safeFilename = `excel_${timestamp}.xlsx`;
-    console.log("📛 Dateiname war leer, verwende:", safeFilename);
+  if (!safeFilename) {
+    safeFilename = `excel_${Date.now()}.xlsx`;
   }
 
-  if (
-    !safeFilename.toLowerCase().endsWith(".xlsx") &&
-    !safeFilename.toLowerCase().endsWith(".xls")
-  ) {
-    safeFilename += ".xlsx";
-    console.log("📛 Dateiendung hinzugefügt:", safeFilename);
+  const arrayBuffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+
+  let binary = "";
+
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
   }
 
-  try {
-    let response = await fetch(
-      "https://excel-transformer.free.beeceptor.com/todos",
-      {
-        method: "GET",
-      },
-    );
+  const base64 = btoa(binary);
 
-    console.log("Reponse from API: ", response);
-    const arrayBuffer = await blob.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
+  const dataUrl = `data:${blob.type};base64,${base64}`;
 
-    let binary = "";
-    const chunkSize = 65536;
+  pendingUrls.add(dataUrl);
 
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
-      for (let j = 0; j < chunk.length; j++) {
-        binary += String.fromCharCode(chunk[j]);
-      }
-    }
+  await chrome.downloads.download({
+    url: dataUrl,
+    filename: safeFilename,
+    conflictAction: "overwrite",
+  });
 
-    const base64 = btoa(binary);
-    const dataUrl = `data:${blob.type || "application/octet-stream"};base64,${base64}`;
+  console.log("Download gestartet");
 
-    pendingUrls.add(dataUrl);
-    console.log(
-      "➕ URL zum Ignorieren hinzugefügt:",
-      dataUrl.substring(0, 50) + "...",
-    );
-
-    await chrome.downloads.download({
-      url: dataUrl,
-      filename: safeFilename,
-      conflictAction: "overwrite",
-    });
-
-    console.log("✅ Download erfolgreich gestartet");
-
-    setTimeout(() => {
-      pendingUrls.delete(dataUrl);
-      console.log("➖ URL aus Ignorier-Liste entfernt");
-    }, 5000);
-  } catch (error) {
-    console.error("❌ Download fehlgeschlagen:", error);
+  setTimeout(() => {
     pendingUrls.delete(dataUrl);
-  }
+  }, 5000);
 }
