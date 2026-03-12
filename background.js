@@ -17,19 +17,17 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     (downloadItem.state && downloadItem.state !== "in_progress") ||
     !isExcelDownload(downloadItem)
   ) {
-    suggest();
+    suggest({ filename: downloadItem.filename });
     return;
   }
 
   if (downloadItem.byExtensionId) {
-    suggest({ filename: originalFileNames.get(downloadItem.id - 1) });
+    suggest({ filename: finalFileName });
     return;
+  } else {
+    finalFileName = downloadItem.filename;
+    suggest({ filename: finalFileName });
   }
-
-  originalFileNames.set(downloadItem.id, downloadItem.filename);
-  finalFileName = downloadItem.filename;
-
-  suggest({ filename: finalFileName });
 });
 
 // Download erkannt
