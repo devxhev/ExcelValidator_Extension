@@ -1,111 +1,133 @@
-// content.js
-console.log("✅ Content Script geladen in:", window.location.href);
+console.log("[CS] content.js loaded on:", window.location.href);
 
-// Auf Nachrichten vom Background warten
+// =====================================================
+// Inject pageHook.js into real page context
+// =====================================================
+(function injectPageHook() {
+  try {
+    const script = document.createElement("script");
+    script.src = chrome.runtime.getURL("pageHook.js");
+    script.type = "text/javascript";
+
+    script.onload = () => {
+      console.log("[CS] pageHook.js successfully injected");
+      script.remove();
+    };
+
+    script.onerror = (e) => {
+      console.error("[CS] pageHook.js failed to load", e);
+    };
+
+    (document.head || document.documentElement).appendChild(script);
+  } catch (error) {
+    console.error("[CS] Failed to inject pageHook.js:", error);
+  }
+})();
+
+// =====================================================
+// Trigger final browser download from tab context
+// =====================================================
+function triggerFinalDownload(data, mimeType, filename) {
+  console.log("[CS] triggerFinalDownload called");
+  console.log("[CS] filename:", filename);
+  console.log("[CS] mimeType:", mimeType);
+  console.log("[CS] byteLength:", data?.length);
+
+  const bytes = new Uint8Array(data);
+  const blob = new Blob([bytes], {
+    type: mimeType || "application/octet-stream",
+  });
+
+  const objectUrl = URL.createObjectURL(blob);
+
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename || `excel_${Date.now()}.xlsx`;
+  anchor.style.display = "none";
+
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+
+  console.log("[CS] Final processed download started");
+
+  setTimeout(() => {
+    URL.revokeObjectURL(objectUrl);
+    console.log("[CS] Final processed download object URL revoked");
+  }, 5000);
+}
+
+// =====================================================
+// Receive messages from pageHook.js
+// =====================================================
+window.addEventListener("message", (event) => {
+  try {
+    if (event.source !== window) return;
+
+    const msg = event.data;
+    if (!msg || msg.source !== "excel-transformer-pagehook") return;
+
+    if (msg.type !== "INTERCEPTED_EXCEL_BLOB_DOWNLOAD") return;
+
+    console.log(
+      "[CS] Received intercepted blob-based Excel download from pageHook",
+    );
+    console.log("[CS] filename:", msg.filename);
+    console.log("[CS] mimeType:", msg.mimeType);
+    console.log("[CS] data length:", msg.data?.length);
+
+    chrome.runtime.sendMessage(
+      {
+        action: "PROCESS_BLOB_EXCEL",
+        filename: msg.filename,
+        mimeType: msg.mimeType,
+        data: msg.data,
+      },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          console.error(
+            "[CS] Error sending blob to background:",
+            chrome.runtime.lastError,
+          );
+          return;
+        }
+
+        if (!response || !response.success) {
+          console.error("[CS] Background processing failed:", response?.error);
+          return;
+        }
+
+        console.log(
+          "[CS] Background finished processing intercepted blob download",
+        );
+      },
+    );
+  } catch (error) {
+    console.error("[CS] Error handling window message:", error);
+  }
+});
+
+// =====================================================
+// Messages from background
+// =====================================================
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log("📨 Nachricht erhalten:", request);
-
-  if (request.action === "ping") {
-    console.log("🏓 Pong");
+  if (request?.action === "ping") {
+    console.log("[CS] Ping received");
     sendResponse({ pong: true });
     return false;
   }
 
-  if (request.action === "getBlob") {
-    console.log("🔍 Hole Blob von URL:", request.url);
-
-    // Asynchronen Handler aufrufen
-    handleGetBlob(request.url)
-      .then((result) => {
-        console.log(
-          "✅ Blob erfolgreich geholt, Größe:",
-          result.data.length,
-          "Bytes",
-        );
-        sendResponse(result);
-      })
-      .catch((error) => {
-        console.error("❌ Fehler beim Holen:", error);
-        sendResponse({
-          success: false,
-          error: error.message,
-        });
-      });
-
-    return true; // Wichtig für asynchrone Antwort!
+  if (request?.action === "TRIGGER_PROCESSED_DOWNLOAD") {
+    try {
+      console.log("[CS] Received TRIGGER_PROCESSED_DOWNLOAD from background");
+      triggerFinalDownload(request.data, request.mimeType, request.filename);
+      sendResponse({ success: true });
+    } catch (error) {
+      console.error("[CS] Failed to trigger processed download:", error);
+      sendResponse({ success: false, error: error.message });
+    }
+    return true;
   }
+
+  return false;
 });
-
-// Hauptfunktion zum Holen des Blobs
-async function handleGetBlob(blobUrl) {
-  try {
-    console.log("🌐 Fetche blob URL...");
-
-    // WICHTIG: blob: URLs können direkt gefetcht werden!
-    const response = await fetch(blobUrl);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    console.log(
-      "📦 Response erhalten, Content-Type:",
-      response.headers.get("content-type"),
-    );
-
-    const blob = await response.blob();
-    console.log("💾 Blob erstellt, Typ:", blob.type, "Größe:", blob.size);
-
-    // In ArrayBuffer konvertieren für Übertragung
-    const buffer = await blob.arrayBuffer();
-    console.log("📊 ArrayBuffer Größe:", buffer.byteLength);
-
-    return {
-      success: true,
-      data: Array.from(new Uint8Array(buffer)),
-      mimeType:
-        blob.type ||
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    };
-  } catch (error) {
-    console.error("❌ Fetch fehlgeschlagen:", error);
-
-    // Fallback: Versuche Blob über DOM zu finden
-    console.log("🔍 Versuche Fallback-Methode...");
-    const fallbackBlob = await findBlobInDOM(blobUrl);
-    if (fallbackBlob) {
-      console.log("✅ Fallback erfolgreich");
-      return fallbackBlob;
-    }
-
-    throw error;
-  }
-}
-
-// Fallback: Suche im DOM nach dem Blob
-async function findBlobInDOM(blobUrl) {
-  // Suche nach Elementen mit blob: URLs
-  const elements = document.querySelectorAll('[src*="blob:"], [href*="blob:"]');
-  console.log(`🔍 Gefundene blob-Elemente: ${elements.length}`);
-
-  for (const el of elements) {
-    const elementUrl = el.src || el.href;
-    if (elementUrl === blobUrl) {
-      console.log("✅ Passendes Element gefunden:", el.tagName);
-      try {
-        const response = await fetch(blobUrl);
-        const blob = await response.blob();
-        const buffer = await blob.arrayBuffer();
-        return {
-          success: true,
-          data: Array.from(new Uint8Array(buffer)),
-          mimeType: blob.type,
-        };
-      } catch (e) {
-        console.error("❌ Fallback-Fetch fehlgeschlagen:", e);
-      }
-    }
-  }
-
-  return null;
-}
