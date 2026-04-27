@@ -8,7 +8,13 @@
     "service_worker": "background.js"
   },
 
-  "permissions": ["downloads", "scripting", "activeTab"],
+  "permissions": [
+    "downloads",
+    "scripting",
+    "activeTab",
+    "declarativeNetRequest",
+    "webRequest"
+  ],
 
   "host_permissions": ["<all_urls>", "file://*"],
 

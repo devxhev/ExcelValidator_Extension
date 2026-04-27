@@ -1,8 +1,6 @@
 console.log("[CS] content.js loaded on:", window.location.href);
 
-// =====================================================
 // Inject pageHook.js into real page context
-// =====================================================
 (function injectPageHook() {
   try {
     const script = document.createElement("script");
@@ -24,9 +22,7 @@ console.log("[CS] content.js loaded on:", window.location.href);
   }
 })();
 
-// =====================================================
 // Trigger final browser download from tab context
-// =====================================================
 function triggerFinalDownload(data, mimeType, filename) {
   console.log("[CS] triggerFinalDownload called");
   console.log("[CS] filename:", filename);
@@ -57,9 +53,7 @@ function triggerFinalDownload(data, mimeType, filename) {
   }, 5000);
 }
 
-// =====================================================
 // Receive messages from pageHook.js
-// =====================================================
 window.addEventListener("message", (event) => {
   try {
     if (event.source !== window) return;
@@ -82,6 +76,7 @@ window.addEventListener("message", (event) => {
         filename: msg.filename,
         mimeType: msg.mimeType,
         data: msg.data,
+        sapMeta: msg.sapMeta,
       },
       (response) => {
         if (chrome.runtime.lastError) {
@@ -107,9 +102,7 @@ window.addEventListener("message", (event) => {
   }
 });
 
-// =====================================================
 // Messages from background
-// =====================================================
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request?.action === "ping") {
     console.log("[CS] Ping received");

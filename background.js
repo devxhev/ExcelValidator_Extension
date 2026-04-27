@@ -1,14 +1,30 @@
 console.log("[BG] Background service worker started");
 
-// =====================================================
-// State
-// =====================================================
 const processedOriginalDownloadIds = new Set();
 const recentOwnFinalDownloads = new Map(); // filename -> expiry timestamp
 
-// =====================================================
-// Helpers
-// =====================================================
+function extractSapMetadata(url) {
+  try {
+    const u = new URL(url);
+    const path = u.pathname;
+
+    const serviceMatch = path.match(/\/odata\/sap\/([^/]+)\//);
+    const entityMatch = path.match(/\/odata\/sap\/[^/]+\/([^?/]+)/);
+
+    return {
+      serviceName: serviceMatch?.[1] ?? null,
+      entitySet: entityMatch?.[1] ?? null,
+      sapClient: u.searchParams.get("sap-client"),
+      sapLanguage: u.searchParams.get("sap-language"),
+      filter: u.searchParams.get("$filter"),
+      select: u.searchParams.get("$select"),
+      top: u.searchParams.get("$top"),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function now() {
   return Date.now();
 }
@@ -161,30 +177,23 @@ async function sendProcessedFileToTab(tabId, blob, filename) {
   });
 }
 
-// =====================================================
-// Processing pipeline
-// Replace this with your API call later
-// =====================================================
-async function processExcelBlob(blob, filename) {
+async function processExcelBlob(blob, filename, sapMeta) {
   console.log("[BG] processExcelBlob called");
   console.log("[BG] Incoming filename:", filename);
   console.log("[BG] Incoming blob size:", blob.size);
   console.log("[BG] Incoming blob type:", blob.type);
+  console.log("[BG] SAP Metadata: ", sapMeta);
 
-  // ---------------------------------------------------
-  // Real API example:
-  //
   // const formData = new FormData();
   // formData.append("file", blob, filename);
   //
-  // const response = await fetch("https://your-api.example/upload", {
-  //   method: "POST",
-  //   body: formData
-  // });
-  //
-  // if (!response.ok) {
-  //   throw new Error(`API failed: ${response.status}`);
-  // }
+  const response = await fetch("https://excel-validator.free.beeceptor.com", {
+    method: "GET",
+  });
+
+  if (!response.ok) {
+    throw new Error(`API failed: ${response.status}`);
+  } else console.log("API Aufruf war erfolgreich mit API Response: ", response);
   //
   // const processedBuffer = await response.arrayBuffer();
   // return new Blob([processedBuffer], {
@@ -196,9 +205,6 @@ async function processExcelBlob(blob, filename) {
   return blob;
 }
 
-// =====================================================
-// Handle blob-based Excel downloads from pageHook/content
-// =====================================================
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.action !== "PROCESS_BLOB_EXCEL") {
     return false;
@@ -229,7 +235,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.log("[BG] Size:", blob.size);
       console.log("[BG] Type:", blob.type);
 
-      const processedBlob = await processExcelBlob(blob, filename);
+      const processedBlob = await processExcelBlob(
+        blob,
+        filename,
+        message.sapMeta ?? null,
+      );
       await sendProcessedFileToTab(tabId, processedBlob, filename);
 
       sendResponse({ success: true });
@@ -241,10 +251,57 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return true;
 });
+// manifest.json — zusätzliche Permission nötig:
+// "permissions": ["declarativeNetRequest", "downloads", "tabs", ...]
 
-// =====================================================
-// Handle normal HTTP downloads AFTER completion
-// =====================================================
+// background.js — eleganteste Lösung:
+// Download-URL abfangen BEVOR der Browser-Download startet
+
+chrome.downloads.onCreated.addListener(async (downloadItem) => {
+  if (isOwnFinalDownload(basename(downloadItem.filename || ""))) return;
+
+  const base = basename(downloadItem.filename || downloadItem.url);
+  if (
+    !downloadItem.url.startsWith("http") ||
+    (!looksLikeExcelFilename(base) && !looksLikeExcelMime(downloadItem.mime))
+  )
+    return;
+
+  const sapMeta = extractSapMetadata(downloadItem.url);
+  // Sofort canceln — Browser hat noch nichts auf Disk
+  // (onCreated feuert VOR dem tatsächlichen Download)
+  await chrome.downloads.cancel(downloadItem.id);
+  await chrome.downloads.erase({ id: downloadItem.id });
+
+  console.log("[BG] Intercepted before disk write:", base);
+
+  try {
+    // Credentials mitschicken falls nötig (Session-Cookies etc.)
+    const response = await fetch(downloadItem.url, {
+      credentials: "include", // wichtig: Session-Auth vom Tab mitnutzen
+    });
+
+    if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+
+    const blob = await response.blob();
+    const processedBlob = await processExcelBlob(blob, base, sapMeta);
+
+    let tabId = downloadItem.tabId;
+    if (!tabId || tabId < 0) {
+      const [active] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      tabId = active?.id;
+    }
+
+    await sendProcessedFileToTab(tabId, processedBlob, base);
+  } catch (err) {
+    console.error("[BG] Direct fetch after cancel failed:", err);
+  }
+});
+
+/*
 chrome.downloads.onChanged.addListener(async (delta) => {
   try {
     if (!delta.state || delta.state.current !== "complete") {
@@ -329,3 +386,4 @@ chrome.downloads.onChanged.addListener(async (delta) => {
     console.error("[BG] Error in downloads.onChanged:", error);
   }
 });
+ */
