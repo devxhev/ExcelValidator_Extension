@@ -1,5 +1,19 @@
 console.log("[CS] content.js loaded on:", window.location.href);
+/*
+function isFioriApp() {
+  const url = window.location.href;
+  const patterns = [
+    /\/sap\/bc\/ui5_ui5\/ui2\/ushell\/shells\/abap\/FioriLaunchpad\.html/,
+    /\.launchpad\.cfapps\.[^.]+\.hana\.ondemand\.com/,
+    /\.dispatcher\.hana\.ondemand\.com/,
+    /\.hana\.ondemand\.com\/site/,
+    // Generisch: jede SAP-Domain mit /sap/ Pfad und UI5-Shell
+    /\/sap\/bc\/ui2\//,
+  ];
 
+  return patterns.some((p) => p.test(url));
+}
+*/
 // Inject pageHook.js into real page context
 (function injectPageHook() {
   try {
