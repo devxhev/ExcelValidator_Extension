@@ -5,9 +5,7 @@
 
   const batchMetaByService = new Map();
 
-  // =====================================================
   // XHR hooken — SAP nutzt XMLHttpRequest für OData
-  // =====================================================
   const originalOpen = XMLHttpRequest.prototype.open;
   const originalSend = XMLHttpRequest.prototype.send;
 
@@ -79,7 +77,7 @@
         const path = u.pathname;
         const isBatch = path.endsWith("/$batch");
 
-        const serviceMatch = path.match(/\/odata\/sap\/([^/]+)/);
+        const serviceMatch = path.match(/\/odata\/[^/]+\/([^/]+)/);
         const serviceName = serviceMatch?.[1];
         if (!serviceName) return;
 
@@ -107,7 +105,7 @@
           }
         } else {
           // Normaler GET — Entity direkt aus URL
-          const entityMatch = path.match(/\/odata\/sap\/[^/]+\/([^?/]+)/);
+          const entityMatch = path.match(/\/odata\/[^/]+\/[^/]+\/([^?/]+)/);
           entitySet = entityMatch?.[1];
           filter = u.searchParams.get("$filter");
           select = u.searchParams.get("$select");
@@ -156,8 +154,8 @@
       const u = new URL(url, window.location.origin);
       const path = u.pathname;
 
-      const serviceMatch = path.match(/\/odata\/sap\/([^/]+)\//);
-      const entityMatch = path.match(/\/odata\/sap\/[^/]+\/([^?/]+)/);
+      const serviceMatch = path.match(/\/odata\/[^/]+\/([^/]+)/);
+      const entityMatch = path.match(/\/odata\/[^/]+\/[^/]+\/([^?/]+)/);
 
       const meta = {
         url,
