@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Excel Transformer Extension",
-  "description": "Intercepts Excel downloads (blob and HTTP), processes them, and triggers a final download.",
+  "name": "ProtectionHub",
+  "description": "Intercepts Excel downloads (blob and HTTP), secures them, and triggers a final download.",
   "version": "1.0.0",
 
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "classic"
   },
 
   "permissions": [
@@ -13,13 +14,19 @@
     "scripting",
     "activeTab",
     "declarativeNetRequest",
-    "webRequest"
+    "webRequest",
+    "storage"
   ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
 
   "host_permissions": [
     "*://*/sap/bc/ui2/flp*",
     "*://*/sap/bc/ui5_ui5/ui2/ushell/shells/abap/*",
-    "file://*"
+    "file://*",
+    "https://10.41.14.34:8746/*"
   ],
   "content_scripts": [
     {

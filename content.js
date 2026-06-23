@@ -118,6 +118,7 @@ window.addEventListener("message", (event) => {
 
 // Messages from background
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request?.action == "showAlert") alert(request.text);
   if (request?.action === "ping") {
     console.log("[CS] Ping received");
     sendResponse({ pong: true });

@@ -2,23 +2,14 @@
   console.log("[PH] pageHook.js injected into page context");
 
   const blobRegistry = new Map();
-
   const batchMetaByService = new Map();
-
-  // XHR hooken — SAP nutzt XMLHttpRequest für OData
-  const originalOpen = XMLHttpRequest.prototype.open;
-  const originalSend = XMLHttpRequest.prototype.send;
 
   let lastHash = window.location.hash;
 
   window.addEventListener("hashchange", () => {
     const newHash = window.location.hash;
-
-    // Nur leeren wenn sich die App wirklich geändert hat
-    // Fiori Hash: #ZAUTHOR_CV_CDS-manage&... → #ZBOOK_CV_CDS-manage&...
     const oldApp = lastHash.split("-")[0];
     const newApp = newHash.split("-")[0];
-
     if (oldApp !== newApp) {
       console.log(
         "[PH] App changed, clearing batch cache:",
@@ -28,13 +19,11 @@
       );
       batchMetaByService.clear();
     }
-
     lastHash = newHash;
   });
 
   function storeBatchMeta(meta) {
     if (!meta.serviceName) return;
-
     if (!batchMetaByService.has(meta.serviceName)) {
       batchMetaByService.set(meta.serviceName, []);
     }
@@ -45,20 +34,17 @@
   function findBestBatchMeta() {
     const allMetas = [...batchMetaByService.values()].flat();
     if (allMetas.length === 0) return null;
-
-    // Nach Timestamp sortieren — neuester zuerst
     allMetas.sort((a, b) => (b.capturedAt ?? 0) - (a.capturedAt ?? 0));
-
-    // Priorität 1: hat $select (konkrete Tabellenspalten)
     const withSelect = allMetas.find((m) => m.select !== null);
     if (withSelect) return withSelect;
-
-    // Priorität 2: hat $top
     const withTop = allMetas.find((m) => m.top !== null);
     if (withTop) return withTop;
-
-    return allMetas[0]; // neuester
+    return allMetas[0];
   }
+
+  // XHR Hook
+  const originalOpen = XMLHttpRequest.prototype.open;
+  const originalSend = XMLHttpRequest.prototype.send;
 
   XMLHttpRequest.prototype.open = function (method, url) {
     this._url = url;
@@ -81,20 +67,18 @@
         const serviceName = serviceMatch?.[1];
         if (!serviceName) return;
 
-        let entitySet = null;
-        let filter = null;
-        let select = null;
-        let top = null;
-        let skip = null;
+        let entitySet = null,
+          filter = null,
+          select = null,
+          top = null,
+          skip = null;
 
         if (isBatch && this._requestBody) {
-          // Ersten GET aus dem Batch-Body parsen
           const getMatch = this._requestBody.match(
             /GET\s+([^\s?]+)(\?[^\s]*)?\s/,
           );
           if (getMatch) {
-            entitySet = getMatch[1]; // z.B. "ZAUTHOR_CV_CDS_Items"
-
+            entitySet = getMatch[1];
             if (getMatch[2]) {
               const params = new URLSearchParams(getMatch[2].slice(1));
               filter = params.get("$filter");
@@ -104,7 +88,6 @@
             }
           }
         } else {
-          // Normaler GET — Entity direkt aus URL
           const entityMatch = path.match(/\/odata\/[^/]+\/[^/]+\/([^?/]+)/);
           entitySet = entityMatch?.[1];
           filter = u.searchParams.get("$filter");
@@ -113,7 +96,7 @@
           skip = u.searchParams.get("$skip");
         }
 
-        const meta = {
+        storeBatchMeta({
           serviceName,
           entitySet,
           isBatch,
@@ -127,11 +110,7 @@
           processingInfo: this.getResponseHeader("sap-processing-info"),
           sapServer: this.getResponseHeader("sap-server"),
           capturedAt: Date.now(),
-        };
-
-        // Pro Service speichern — kein Timeout
-        storeBatchMeta(meta);
-        console.log("[PH] Batch meta cached:", serviceName, meta);
+        });
       } catch (e) {
         console.error("[PH] XHR send hook error:", e);
       }
@@ -140,9 +119,7 @@
     return originalSend.apply(this, arguments);
   };
 
-  // =====================================================
-  // fetch() hooken — neuere SAP Versionen nutzen fetch
-  // =====================================================
+  // fetch Hook
   const originalFetch = window.fetch;
   window.fetch = async function (input, init) {
     const response = await originalFetch.apply(this, arguments);
@@ -153,11 +130,10 @@
 
       const u = new URL(url, window.location.origin);
       const path = u.pathname;
-
       const serviceMatch = path.match(/\/odata\/[^/]+\/([^/]+)/);
       const entityMatch = path.match(/\/odata\/[^/]+\/[^/]+\/([^?/]+)/);
 
-      const meta = {
+      storeBatchMeta({
         url,
         serviceName: serviceMatch?.[1],
         entitySet: entityMatch?.[1],
@@ -169,12 +145,8 @@
         odataVersion: response.headers.get("dataserviceversion"),
         processingInfo: response.headers.get("sap-processing-info"),
         sapServer: response.headers.get("sap-server"),
-        metadataLastMod: response.headers.get("sap-metadata-last-modified"),
         capturedAt: Date.now(),
-      };
-
-      storeODataMeta(meta);
-      console.log("[PH] fetch OData captured:", meta);
+      });
     } catch (e) {
       console.error("[PH] fetch hook error:", e);
     }
@@ -184,9 +156,7 @@
 
   function looksLikeExcelBlob(blob) {
     if (!blob) return false;
-
     const type = (blob.type || "").toLowerCase();
-
     return (
       type.includes("spreadsheetml") ||
       type.includes("ms-excel") ||
@@ -194,15 +164,23 @@
     );
   }
 
-  // Hook URL.createObjectURL
+  // Filename: nimm was SAP gibt, Fallback nur wenn wirklich leer
+  function resolveFilename(downloadAttr) {
+    const trimmed = downloadAttr?.trim();
+    if (trimmed && trimmed !== "") return trimmed;
+    return `excel_${Date.now()}.xlsx`;
+  }
+
+  // URL.createObjectURL Hook
   const originalCreateObjectURL = URL.createObjectURL.bind(URL);
   URL.createObjectURL = function (blob) {
     const objectUrl = originalCreateObjectURL(blob);
-
     if (looksLikeExcelBlob(blob)) {
       const sapMeta = findBestBatchMeta();
-      console.log("[PH] Best batch match:", sapMeta?.entitySet);
-
+      console.log(
+        "[PH] Excel blob registered, best batch:",
+        sapMeta?.entitySet,
+      );
       blobRegistry.set(objectUrl, {
         blob,
         mimeType: blob.type,
@@ -210,13 +188,11 @@
         sapMeta,
       });
     }
-
     return objectUrl;
   };
 
-  // Hook anchor.click to intercept blob-based downloads
+  // anchor.click Hook
   const originalAnchorClick = HTMLAnchorElement.prototype.click;
-
   HTMLAnchorElement.prototype.click = function (...args) {
     try {
       const href = this.href;
@@ -224,26 +200,20 @@
 
       if (href && href.startsWith("blob:") && blobRegistry.has(href)) {
         const entry = blobRegistry.get(href);
-
-        console.log("[PH] Intercepted anchor click for Excel blob download");
-        console.log("[PH] href:", href);
-        console.log("[PH] downloadAttr:", downloadAttr);
+        console.log(
+          "[PH] anchor.click intercepted, downloadAttr:",
+          downloadAttr,
+        );
 
         const reader = new FileReader();
-
         reader.onload = function () {
           try {
-            const arrayBuffer = reader.result;
-            const bytes = Array.from(new Uint8Array(arrayBuffer));
-
+            const bytes = Array.from(new Uint8Array(reader.result));
             window.postMessage(
               {
                 source: "excel-transformer-pagehook",
                 type: "INTERCEPTED_EXCEL_BLOB_DOWNLOAD",
-                filename:
-                  downloadAttr && downloadAttr.trim() !== ""
-                    ? downloadAttr
-                    : `excel_${Date.now()}.xlsx`,
+                filename: resolveFilename(downloadAttr),
                 mimeType:
                   entry.mimeType ||
                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -252,33 +222,21 @@
               },
               "*",
             );
-
-            console.log(
-              "[PH] Posted intercepted Excel blob to content script bridge",
-            );
           } catch (error) {
             console.error("[PH] Failed to post intercepted blob:", error);
           }
         };
-
-        reader.onerror = function () {
-          console.error(
-            "[PH] FileReader failed while reading intercepted Excel blob",
-          );
-        };
-
+        reader.onerror = () => console.error("[PH] FileReader failed");
         reader.readAsArrayBuffer(entry.blob);
-
-        // Prevent the original browser download
         return;
       }
     } catch (error) {
       console.error("[PH] Error in anchor click hook:", error);
     }
-
     return originalAnchorClick.apply(this, args);
   };
-  // Hook dispatchEvent (für Frameworks die nicht .click() nutzen)
+
+  // dispatchEvent Hook
   const originalDispatchEvent = EventTarget.prototype.dispatchEvent;
   EventTarget.prototype.dispatchEvent = function (event) {
     try {
@@ -290,7 +248,10 @@
       ) {
         const entry = blobRegistry.get(this.href);
         const downloadAttr = this.download;
-        console.log("[PH] dispatchEvent click intercepted on blob anchor");
+        console.log(
+          "[PH] dispatchEvent click intercepted, downloadAttr:",
+          downloadAttr,
+        );
 
         const reader = new FileReader();
         reader.onload = function () {
@@ -300,7 +261,7 @@
               {
                 source: "excel-transformer-pagehook",
                 type: "INTERCEPTED_EXCEL_BLOB_DOWNLOAD",
-                filename: downloadAttr?.trim() || `excel_${Date.now()}.xlsx`,
+                filename: resolveFilename(downloadAttr),
                 mimeType:
                   entry.mimeType ||
                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -314,7 +275,7 @@
           }
         };
         reader.readAsArrayBuffer(entry.blob);
-        return true; // Originalen Download blockieren
+        return true;
       }
     } catch (e) {
       console.error("[PH] Error in dispatchEvent hook:", e);
@@ -322,7 +283,7 @@
     return originalDispatchEvent.call(this, event);
   };
 
-  // MutationObserver: fängt <a blob:> ab die ins DOM eingefügt werden
+  // MutationObserver Hook
   const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
@@ -331,11 +292,13 @@
           node.href?.startsWith("blob:") &&
           blobRegistry.has(node.href)
         ) {
-          console.log("[PH] MutationObserver: blob anchor added to DOM");
+          console.log(
+            "[PH] MutationObserver: blob anchor added, downloadAttr:",
+            node.download,
+          );
           const entry = blobRegistry.get(node.href);
           const downloadAttr = node.download;
 
-          // Originalen Click blockieren bevor er feuert
           node.addEventListener(
             "click",
             (e) => {
@@ -348,8 +311,7 @@
                   {
                     source: "excel-transformer-pagehook",
                     type: "INTERCEPTED_EXCEL_BLOB_DOWNLOAD",
-                    filename:
-                      downloadAttr?.trim() || `excel_${Date.now()}.xlsx`,
+                    filename: resolveFilename(downloadAttr),
                     mimeType:
                       entry.mimeType ||
                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -372,7 +334,5 @@
     childList: true,
     subtree: true,
   });
-  console.log("[PH] MutationObserver + dispatchEvent hooks installed");
-
   console.log("[PH] pageHook hooks installed");
 })();

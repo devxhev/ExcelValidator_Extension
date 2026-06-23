@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ProtectionHub Settings</title>
+    <link rel="stylesheet" href="style/style.css" />
+  </head>
+  <body>
+    <div class="page">
+      <div class="header">
+        <h1 data-i18n="title"></h1>
+        <p data-i18n="subtitle"></p>
+      </div>
+
+      <div class="card">
+        <div class="card-title" data-i18n="apiconnection"></div>
+
+        <div class="field">
+          <label for="endpoint" data-i18n="endpoint"></label>
+          <input
+            type="text"
+            id="endpoint"
+            placeholder="https://api.example.com"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <p class="hint" data-i18n="hint"></p>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn-save" id="saveBtn" data-i18n="save"></button>
+        <button class="btn-reset" id="resetBtn" data-i18n="reset"></button>
+        <span class="save-msg" id="saveMsg" data-i18n="saved"></span>
+        <span
+          class="invalid-endpoint-msg"
+          id="invalid-endpoint"
+          data-i18n="invalidendpoint"
+        ></span>
+      </div>
+    </div>
+
+    <script src="options.js" defer></script>
+  </body>
+</html>

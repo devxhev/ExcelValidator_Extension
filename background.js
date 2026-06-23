@@ -130,79 +130,266 @@ async function ensureContentScript(tabId) {
     });
   }
 }
-
-async function sendProcessedFileToTab(tabId, blob, filename) {
-  if (tabId == null || tabId < 0) {
-    throw new Error("No valid tabId available for final download");
-  }
-
-  await ensureContentScript(tabId);
-
+async function triggerDownloadViaAPI(blob, filename) {
   const safeFilename = ensureExcelFilename(filename);
+
   const arrayBuffer = await blob.arrayBuffer();
-  const bytes = Array.from(new Uint8Array(arrayBuffer));
 
   registerOwnFinalDownload(safeFilename);
 
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = btoa(binary);
+
+  const mimeType =
+    blob.type ||
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const dataUrl = `data:${mimeType};base64,${base64}`;
+
   return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(
-      tabId,
+    chrome.downloads.download(
       {
-        action: "TRIGGER_PROCESSED_DOWNLOAD",
+        url: dataUrl,
         filename: safeFilename,
-        mimeType:
-          blob.type ||
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        data: bytes,
+        saveAs: false,
       },
-      (response) => {
+      (downloadId) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
           return;
         }
 
-        if (!response || !response.success) {
-          reject(
-            new Error(
-              response?.error || "Final content-script download failed",
-            ),
-          );
+        if (downloadId == null) {
+          reject(new Error("Download failed to start"));
           return;
         }
 
-        console.log("[BG] Final processed download triggered in tab:", tabId);
+        console.log("[BG] Final processed download triggered, id:", downloadId);
         resolve();
       },
     );
   });
 }
+const ENGINE_SERVER = "https://10.41.14.34:8746";
+async function processExcelBlob(blob, filename, sapMeta, tabId) {
+  console.log("[BG] processExcelBlob called for: ", filename);
+  try {
+    const { endpoint } = await chrome.storage.sync.get("endpoint");
 
-async function processExcelBlob(blob, filename, sapMeta) {
-  console.log("[BG] processExcelBlob called");
-  console.log("[BG] Incoming filename:", filename);
-  console.log("[BG] Incoming blob size:", blob.size);
-  console.log("[BG] Incoming blob type:", blob.type);
-  console.log("[BG] SAP Metadata: ", sapMeta);
+    if (tabId != null) {
+      if (endpoint == undefined) {
+        chrome.tabs.sendMessage(tabId, {
+          action: "showAlert",
+          text: "ProtectionHub Extension: No endpoint is configured. Please configure an endpoint in the extension settings. The original file download will proceed without validation.",
+        });
+        return blob;
+      }
+    }
 
-  // const formData = new FormData();
-  // formData.append("file", blob, filename);
-  //
-  const response = await fetch("https://excel-validator.free.beeceptor.com", {
-    method: "GET",
+    const actionForm = await getActionForm(endpoint, filename, sapMeta);
+
+    const protectedBlob = await executeActionForm(
+      endpoint,
+      blob,
+      filename,
+      actionForm,
+    );
+
+    return protectedBlob;
+  } catch (error) {
+    console.log("[BG] Protection Engine called failed: ", error);
+    return blob;
+  }
+}
+
+async function getActionForm(engine_server, filename, sapMeta) {
+  const customerIdXml = `<id>
+  <customer_id>engine_customer</customer_id>
+  <system_id>API</system_id>
+  <system_type>ENGINE_API</system_type>
+  </id>`;
+
+  const metadataXml = `<metadata>
+  <general_metadata>
+    <simple_value>
+      <entry>
+          <key>user_name</key>
+          <value>xhevi</value>
+        </entry>
+      <entry>
+          <key>sap_service</key>
+          <value>${escapeXml(sapMeta?.serviceName ?? "")}</value>
+        </entry>
+        <entry>
+          <key>sap_entity</key>
+          <value>${escapeXml(sapMeta?.entitySet ?? "")}</value>
+        </entry>
+        <entry>
+          <key>filename</key>
+          <value>${escapeXml(filename)}</value>
+        </entry>
+    </simple_value>
+  </general_metadata>
+</metadata>`;
+
+  const formData = new FormData();
+  formData.append("customerIdentification", customerIdXml);
+  formData.append("metadata", metadataXml);
+  const response = await fetch(
+    `${engine_server}/engine-server/serverprocess/GetActionForm`,
+    {
+      method: "POST",
+      body: formData,
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
+    },
+  );
+
+  if (!response.ok) throw new Error(`GetActionForm failed: ${response.status}`);
+
+  const rawText = await response.text();
+  console.log("[BG] GetActionForm response received");
+  return parseMultipartResponse(rawText);
+}
+async function executeActionForm(engine_server, blob, filename, actionForm) {
+  const customerIdXml = `<id>
+  <customer_id>engine_customer</customer_id>
+  <system_id>API</system_id>
+  <system_type>ENGINE_API</system_type>
+  </id>`;
+
+  const formData = new FormData();
+  formData.append("customerIdentification", customerIdXml);
+  formData.append("action", actionForm.action.replace("AUDIT", "LABEL"));
+  formData.append("template", actionForm.template);
+  formData.append("classification", actionForm.classification);
+  formData.append(
+    "extendedTags",
+    actionForm.extendedTags ?? "<extended_tags></extended_tags>",
+  );
+
+  if (actionForm.userEmailNeeded) {
+    formData.append("author", "<author>user@example.com</author>"); // dynamisch setzen
+  } else {
+    formData.append("author", "<author>?</author>");
+  }
+
+  formData.append("file_size", String(blob.size));
+  formData.append("file", blob, filename);
+  const response = await fetch(
+    `${engine_server}/engine-server/serverprocess/ExecuteActionForm`,
+    {
+      method: "POST",
+      body: formData,
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
+    },
+  );
+  if (!response.ok)
+    throw new Error("ExecuteActionForm failed: ", response.status);
+
+  const contentType = response.headers.get("content-type");
+  const rawBuffer = await response.arrayBuffer();
+
+  const boundaryMatch = contentType?.match(/boundary=([^;]+)/);
+  const boundary = boundaryMatch?.[1];
+
+  const protectedFileBuffer = extractFileFromMultipart(rawBuffer, boundary);
+  console.log("[BG] File protected, new size:", protectedFileBuffer.byteLength);
+
+  return new Blob([protectedFileBuffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
+}
+//Helpers
+function escapeXml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
-  if (!response.ok) {
-    throw new Error(`API failed: ${response.status}`);
-  } else console.log("API Aufruf war erfolgreich mit API Response: ", response);
-  //
-  // const processedBuffer = await response.arrayBuffer();
-  // return new Blob([processedBuffer], {
-  //   type: blob.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-  // });
-  // ---------------------------------------------------
+function extractFileFromMultipart(arrayBuffer, boundary) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const decoder = new TextDecoder("latin1"); // wichtig: latin1, nicht utf-8 (Binärdaten!)
+  const text = decoder.decode(bytes);
 
-  console.log("[BG] Demo mode: returning original blob unchanged");
-  return blob;
+  const boundaryStr = `--uuid:${boundary?.replace("uuid:", "")}`;
+  const fileMarker = "Content-ID: <file>";
+
+  const fileMarkerIndex = text.indexOf(fileMarker);
+  if (fileMarkerIndex === -1) {
+    throw new Error("File part not found in multipart response");
+  }
+
+  const headerEnd = text.indexOf("\r\n\r\n", fileMarkerIndex);
+  const dataStart =
+    headerEnd !== -1
+      ? headerEnd + 4
+      : text.indexOf("\n\n", fileMarkerIndex) + 2;
+
+  const nextBoundaryIndex = text.indexOf(boundaryStr, dataStart);
+  const dataEndApprox =
+    nextBoundaryIndex !== -1 ? nextBoundaryIndex : text.length;
+
+  let dataEnd = dataEndApprox;
+  while (
+    dataEnd > dataStart &&
+    (bytes[dataEnd - 1] === 0x0a ||
+      bytes[dataEnd - 1] === 0x0d ||
+      bytes[dataEnd - 1] === 0x2d)
+  ) {
+    dataEnd--;
+  }
+
+  return bytes.slice(dataStart, dataEnd);
+}
+
+function parseMultipartResponse(rawText) {
+  const boundaryMatch = rawText.match(/--uuid:[^\r\n]+/);
+  const boundary = boundaryMatch?.[0];
+  if (!boundary) throw new Error("No boundary found in multipart response");
+
+  const parts = rawText
+    .split(boundary)
+    .filter((p) => p.trim() && p.trim() !== "--");
+
+  const result = {
+    action: null,
+    template: null,
+    classification: null,
+    userEmailNeeded: false,
+    extendedTags: null,
+  };
+
+  for (const part of parts) {
+    if (part.includes('name="action"')) {
+      result.action = extractXmlBody(part);
+    } else if (part.includes('name="template"')) {
+      result.template = extractXmlBody(part);
+    } else if (part.includes('name="classification"')) {
+      result.classification = extractXmlBody(part);
+    } else if (part.includes('name="authorMode"')) {
+      const authorModeXml = extractXmlBody(part);
+      result.userEmailNeeded = authorModeXml.includes(
+        "<user_email_needed>true</user_email_needed>",
+      );
+    }
+  }
+
+  return result;
+}
+
+function extractXmlBody(part) {
+  const xmlStart = part.indexOf("<?xml");
+  if (xmlStart === -1) return part.trim();
+  return part.slice(xmlStart).trim();
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -239,8 +426,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         blob,
         filename,
         message.sapMeta ?? null,
+        tabId,
       );
-      await sendProcessedFileToTab(tabId, processedBlob, filename);
+      await triggerDownloadViaAPI(processedBlob, filename);
 
       sendResponse({ success: true });
     } catch (error) {
@@ -251,16 +439,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return true;
 });
-// manifest.json — zusätzliche Permission nötig:
-// "permissions": ["declarativeNetRequest", "downloads", "tabs", ...]
-
-// background.js — eleganteste Lösung:
-// Download-URL abfangen BEVOR der Browser-Download startet
 
 chrome.downloads.onCreated.addListener(async (downloadItem) => {
-  if (isOwnFinalDownload(basename(downloadItem.filename || ""))) return;
+  // data: URLs sind unsere eigenen finalen Downloads — niemals abfangen
+  if (downloadItem.url.startsWith("data:")) {
+    console.log("[BG] Ignoring own data: URL download");
+    return;
+  }
 
-  const base = basename(downloadItem.filename || downloadItem.url);
+  // Filename aus URL extrahieren (downloadItem.filename ist bei onCreated leer)
+  const urlBase = basename(downloadItem.url.split("?")[0]);
+  const base = urlBase || `excel_${Date.now()}.xlsx`;
+
+  // Eigenen Download über registrierten Filename erkennen
+  if (isOwnFinalDownload(base)) {
+    console.log("[BG] Ignoring own registered download:", base);
+    recentOwnFinalDownloads.delete(base);
+    return;
+  }
+
+  // Nur HTTP/HTTPS Excel-Downloads
   if (
     !downloadItem.url.startsWith("http") ||
     (!looksLikeExcelFilename(base) && !looksLikeExcelMime(downloadItem.mime))
@@ -268,36 +466,22 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
     return;
 
   const sapMeta = extractSapMetadata(downloadItem.url);
-  // Sofort canceln — Browser hat noch nichts auf Disk
-  // (onCreated feuert VOR dem tatsächlichen Download)
+
   await chrome.downloads.cancel(downloadItem.id);
   await chrome.downloads.erase({ id: downloadItem.id });
 
-  console.log("[BG] Intercepted before disk write:", base);
+  console.log("[BG] HTTP Excel intercepted:", base);
 
   try {
-    // Credentials mitschicken falls nötig (Session-Cookies etc.)
-    const response = await fetch(downloadItem.url, {
-      credentials: "include", // wichtig: Session-Auth vom Tab mitnutzen
-    });
-
+    const response = await fetch(downloadItem.url, { credentials: "include" });
     if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
 
     const blob = await response.blob();
-    const processedBlob = await processExcelBlob(blob, base, sapMeta);
+    const processedBlob = await processExcelBlob(blob, base, sapMeta, null);
 
-    let tabId = downloadItem.tabId;
-    if (!tabId || tabId < 0) {
-      const [active] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-      tabId = active?.id;
-    }
-
-    await sendProcessedFileToTab(tabId, processedBlob, base);
+    await triggerDownloadViaAPI(processedBlob, base);
   } catch (err) {
-    console.error("[BG] Direct fetch after cancel failed:", err);
+    console.error("[BG] HTTP intercept failed:", err);
   }
 });
 
